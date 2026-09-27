@@ -400,3 +400,32 @@ pub fn set_previous_wasm_hash(env: &Env, hash: &soroban_sdk::BytesN<32>) {
 pub fn get_previous_wasm_hash(env: &Env) -> Option<soroban_sdk::BytesN<32>> {
     env.storage().instance().get(&DataKey::PreviousWasmHash)
 }
+
+// ---------------------------------------------------------------------------
+// Active-proposal cap storage (issue #59)
+// ---------------------------------------------------------------------------
+
+/// Default global cap on simultaneously active proposals when none has been
+/// explicitly configured.
+const DEFAULT_MAX_ACTIVE_PROPOSALS: u64 = 50;
+
+/// Persists the global cap on simultaneously active proposals.
+///
+/// Stored in instance storage so the value is loaded cheaply alongside other
+/// config on every `create_proposal` call.
+pub fn set_max_active_proposals(env: &Env, max: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MaxActiveProposals, &max);
+}
+
+/// Returns the configured global cap on simultaneously active proposals.
+///
+/// Falls back to [`DEFAULT_MAX_ACTIVE_PROPOSALS`] (50) when the key has never
+/// been written (i.e. contracts initialised before this config key was added).
+pub fn get_max_active_proposals(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxActiveProposals)
+        .unwrap_or(DEFAULT_MAX_ACTIVE_PROPOSALS)
+}

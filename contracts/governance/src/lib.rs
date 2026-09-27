@@ -27,17 +27,19 @@ pub mod test_helpers;
 #[cfg(test)]
 mod test_delegation;
 
-use soroban_sdk::{contract, contractclient, contractimpl, token, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, token, Address, BytesN, Env, String, Vec};
 use types::{ConfigKey, ContractError, ContractState, ProposalState, ProposalType, Proposal, Vote, VoteRecord};
 use storage::{
     clear_delegation, clear_pending_admin, get_admin, get_admin_transfer_expiry,
-    get_contract_state, get_delegation, get_last_proposal, get_max_duration, get_min_duration,
+    get_contract_state, get_delegation, get_last_proposal, get_max_active_proposals,
+    get_max_duration, get_min_duration,
     get_min_proposal_balance, get_pending_admin, get_previous_wasm_hash, get_proposal_cooldown,
     get_restrict_admin_vote, get_timelock_duration, get_version, get_vote_record,
     get_voter_snapshot, get_voting_token, has_voted, is_initialized, is_paused, load_proposal,
     mark_voted, next_id, save_proposal, save_vote_record, save_voter_snapshot, set_admin,
     set_admin_transfer_expiry, set_contract_state, set_delegation, set_last_proposal,
-    set_max_duration, set_min_duration, set_min_proposal_balance, set_paused, set_pending_admin,
+    set_max_active_proposals, set_max_duration, set_min_duration, set_min_proposal_balance,
+    set_paused, set_pending_admin,
     set_previous_wasm_hash, set_proposal_cooldown, set_restrict_admin_vote, set_timelock_duration,
     set_version, set_voting_token,
 };
@@ -271,10 +273,13 @@ impl GovernanceContract {
             return Err(ContractError::InvalidDurationRange);
         }
 
-        let token_client = token::Client::new(&env, &get_voting_token(&env)?);
+        // Read the voting token address once and reuse it for both clients,
+        // avoiding a redundant instance-storage read (issue #59).
+        let voting_token_addr = get_voting_token(&env)?;
+        let token_client = token::Client::new(&env, &voting_token_addr);
 
         // Quorum must not exceed total token supply
-        let supply = TokenSupplyClient::new(&env, &get_voting_token(&env)?).total_supply();
+        let supply = TokenSupplyClient::new(&env, &voting_token_addr).total_supply();
         if quorum > supply {
             return Err(ContractError::QuorumExceedsSupply);
         }
@@ -410,7 +415,11 @@ impl GovernanceContract {
             }
         }
 
-        let token_client = token::Client::new(&env, &get_voting_token(&env)?);
+        // Read voting_token once and reuse — avoids a redundant instance-storage
+        // read that would otherwise occur if the address were fetched inline
+        // again later in the same invocation (issue #59).
+        let voting_token_addr = get_voting_token(&env)?;
+        let token_client = token::Client::new(&env, &voting_token_addr);
         // Snapshot: capture the voter's own balance at vote time.
         let own_weight = match get_voter_snapshot(&env, proposal_id, &voter) {
             Some(w) => w,
@@ -1076,7 +1085,10 @@ impl GovernanceContract {
             }
         }
 
-        let token_client = token::Client::new(&env, &get_voting_token(&env)?);
+        // Read voting_token once and reuse for both own-balance and delegator
+        // queries — avoids a redundant instance-storage read (issue #59).
+        let voting_token_addr = get_voting_token(&env)?;
+        let token_client = token::Client::new(&env, &voting_token_addr);
 
         // Own balance snapshot
         let own_weight = match get_voter_snapshot(&env, proposal_id, &voter) {
@@ -1197,4 +1209,38 @@ impl GovernanceContract {
     }
 
 
+}
+
+// ---------------------------------------------------------------------------
+// Module-level helpers (not part of the public contract interface)
+// ---------------------------------------------------------------------------
+
+/// Counts the number of proposals that are currently in the `Active` state.
+///
+/// Scans proposals with IDs from 1 to the current `ProposalCount` inclusive.
+/// This is an O(n) scan over the proposal count; it is only called from
+/// `create_proposal_internal`, which already requires a persistent-storage
+/// write, so the additional reads are acceptable in that context.
+///
+/// When the active-proposal count matters for hot-path performance, prefer
+/// caching the result off-chain and using `update_max_proposals` to tighten
+/// the cap rather than calling this function frequently.
+fn count_active_proposals(env: &Env) -> u64 {
+    use types::DataKey;
+
+    let total: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProposalCount)
+        .unwrap_or(0);
+
+    let mut count: u64 = 0;
+    for id in 1..=total {
+        if let Ok(p) = load_proposal(env, id) {
+            if p.state == ProposalState::Active {
+                count += 1;
+            }
+        }
+    }
+    count
 }

@@ -103,6 +103,8 @@ pub enum ContractError {
     CannotRemoveLastToken = 41,
     /// 42 – Weight multiplier must be greater than zero
     InvalidWeightMultiplier = 42,
+    /// 43 – Global cap on simultaneously active proposals has been reached
+    TooManyActiveProposals = 43,
 }
 
 /// Different types of proposals the governance contract supports.
@@ -363,6 +365,11 @@ pub enum DataKey {
     /// For backward compatibility, single-token DAOs store a token in `VotingToken`
     /// and may also have a corresponding entry in `VotingTokens`.
     VotingTokens,
+
+    /// Global cap on the maximum number of simultaneously active proposals (instance storage).
+    /// Defaults to 50 when not set. Set via `initialize` or `update_max_proposals`.
+    /// Key space: singleton — only one `MaxActiveProposals` entry exists.
+    MaxActiveProposals,
 }
 
 #[contracttype]
